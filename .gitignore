@@ -1,0 +1,6 @@
+# Added by goreleaser init:
+dist/
+573/
+.DS_Store
+extract.exe
+extract.exe.zip
