@@ -1,6 +1,9 @@
 # Added by goreleaser init:
 dist/
 573/
+photos/
 .DS_Store
 extract.exe
 extract.exe.zip
+vendor/
+scrap/

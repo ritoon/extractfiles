@@ -1,241 +1,208 @@
+// package main
+
+// import (
+// 	"fmt"
+
+// 	"fyne.io/fyne/v2"
+// 	"fyne.io/fyne/v2/app"
+// 	"fyne.io/fyne/v2/container"
+// 	"fyne.io/fyne/v2/dialog"
+// 	"fyne.io/fyne/v2/driver/desktop"
+// 	"fyne.io/fyne/v2/widget"
+// )
+
+// func main() {
+// 	a := app.New()
+// 	w := a.NewWindow("Sélection de dossier")
+
+// 	if desc, ok := a.(desktop.App); ok {
+// 		menu := fyne.NewMenu("Fichier",
+// 			fyne.NewMenuItem("Quitter", func() {
+// 				a.Quit()
+// 			}),
+// 		)
+// 		desc.SetSystemTrayMenu(menu)
+// 		// a.SetIcon(fyne.NewStaticResource("icon.png", []byte{}))
+// 	}
+
+// 	label := widget.NewLabel("Aucun dossier sélectionné")
+
+// 	openBtn := widget.NewButton("Choisir un dossier", func() {
+// 		dialog.ShowFolderOpen(func(uri fyne.ListableURI, err error) {
+// 			if err != nil {
+// 				label.SetText("Erreur : " + err.Error())
+// 				return
+// 			}
+// 			if uri != nil {
+// 				label.SetText("Dossier sélectionné :\n" + uri.Path())
+// 				fmt.Println("Chemin :", uri.Path())
+// 			} else {
+// 				label.SetText("Sélection annulée")
+// 			}
+// 		}, w)
+// 	})
+
+// 	content := container.NewVBox(
+// 		openBtn,
+// 		label,
+// 	)
+
+// 	w.SetContent(content)
+
+// 	w.Resize(fyne.NewSize(1200, 800))
+// 	w.ShowAndRun()
+// }
+
 package main
 
 import (
-	"errors"
-	"fmt"
-	"log"
+	"image"
+	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
-	"sort"
-	"strconv"
 	"strings"
 
-	"github.com/xuri/excelize/v2"
-)
+	_ "image/jpeg"
+	_ "image/png"
 
-const (
-	URL_ROUMET = "https://www.roumet.com/photos/"
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
+	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/widget"
 )
 
 func main() {
-	logAction("--------------------------------------------------")
-	logAction("Début du traitement")
-	folerName, err := getCurrentFolderName()
-	if err != nil {
-		logError(err)
-		return
-	}
-	logAction("Le nom du dossier actuel est : " + folerName)
+	a := app.New()
 
-	files, err := readFolderFilName("./")
-	if err != nil {
-		logError(err)
-		return
-	}
-	logAction("Le nombre de fichiers dans le dossier est : " + strconv.Itoa(len(files)))
-
-	err = sortImageFilenames(files)
-	if err != nil {
-		logError(err)
-		return
+	var v vue = vue{
+		name: "folder selected",
+		path: "/selected/folder",
+		a:    a,
 	}
 
-	logAction("Le tri des fichiers a été effectué avec succès")
+	w := a.NewWindow("Sélection de dossier")
 
-	mapFiles := make(map[int]string)
-	increment := 1
-	for i := 0; i < len(files); i++ {
-		if !strings.Contains(files[i], "-") {
-			increment++
-			mapFiles[increment] = URL_ROUMET + folerName + "/" + files[i]
+	// Fonction d'affichage de l'interface suivante
+	showNextInterface := func(folderPath string) {
+		folderName := filepath.Base(folderPath)
+
+		title := widget.NewLabelWithStyle("Nom du dossier :", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
+		nameLabel := widget.NewLabel(folderName)
+
+		// Recherche d'une image
+		imagePath := findFirstImage(folderPath)
+		var img fyne.CanvasObject
+		if imagePath != "" {
+			file, err := os.Open(imagePath)
+			if err != nil {
+				img = widget.NewLabel("Erreur lors de l'ouverture de l'image")
+			} else {
+				defer file.Close()
+				decoded, _, err := image.Decode(file)
+				if err != nil {
+					img = widget.NewLabel("Image invalide")
+				} else {
+					img = canvas.NewImageFromImage(decoded)
+					img.(*canvas.Image).FillMode = canvas.ImageFillContain
+					img.(*canvas.Image).SetMinSize(fyne.NewSize(300, 200))
+				}
+			}
 		} else {
-			mapFiles[increment] += "|" + URL_ROUMET + folerName + "/" + files[i]
+			img = widget.NewLabel("Aucune image trouvée dans le dossier")
 		}
+
+		backBtn := widget.NewButton("Retour", func() {
+			w.SetContent(buildInitialInterface(w, v.showNextInterface))
+		})
+
+		content := container.NewVBox(
+			title,
+			nameLabel,
+			img,
+			backBtn,
+		)
+
+		w.SetContent(container.NewCenter(content))
 	}
 
-	logAction("Le nombre de lots dans le dossier est : " + strconv.Itoa(len(mapFiles)))
-
-	f := excelize.NewFile()
-	defer func() {
-		if err := f.Close(); err != nil {
-			logError(err)
-		}
-	}()
-
-	logAction("Création du fichier Excel avec succès")
-
-	// Create a new sheet.
-	index, err := f.NewSheet("images")
-	if err != nil {
-		logError(err)
-		return
-	}
-	// Set active sheet of the workbook.
-	f.SetActiveSheet(index)
-
-	f.DeleteSheet("Sheet1")
-
-	logAction("Création de la feuille Excel images avec succès")
-
-	// f.DeleteSheet("Sheet1")
-	f.SetColWidth("images", "B", "B", 100)
-	setHeader(f, "images")
-
-	logAction("Ajout des entêtes dans la feuille Excel images avec succès")
-
-	for k, filepathname := range mapFiles {
-		AKeystring := fmt.Sprintf("A%d", k)
-		BKeystring := fmt.Sprintf("B%d", k)
-		CKeystring := fmt.Sprintf("C%d", k)
-		f.SetCellValue("images", AKeystring, extractLotNumber(filepathname))
-		f.SetCellValue("images", BKeystring, filepathname)
-		if strings.Contains(filepathname, "|") {
-			elems := strings.Split(filepathname, "|")
-			// nbImg := strings.Count(filepathname, "|")
-			f.SetCellValue("images", CKeystring, len(elems))
-		} else {
-			f.SetCellValue("images", CKeystring, 1)
-		}
-	}
-
-	logAction("Ajout des données dans la feuille Excel images avec succès")
-
-	// Save spreadsheet by the given path.
-	if err := f.SaveAs("roumet-images.xlsx"); err != nil {
-		logError(err)
-	}
-	logAction("Enregistrement du fichier Excel avec succès")
-	logAction("Fin du traitement")
-	logAction("--------------------------------------------------")
+	w.SetContent(buildInitialInterface(w, showNextInterface))
+	w.Resize(fyne.NewSize(600, 400))
+	w.ShowAndRun()
 }
 
-func getCurrentFolderName() (string, error) {
-	// Récupère le chemin absolu du dossier de travail actuel
-	workingDir, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-
-	// Extrait juste le nom du dernier dossier
-	return filepath.Base(workingDir), nil
+type vue struct {
+	name string
+	path string
+	a    fyne.App
 }
 
-func readFolderFilName(path string) ([]string, error) {
+func (v *vue) showNextInterface(path string) {
 
-	var fileNames []string
-	files, err := os.ReadDir(path)
-	if err != nil {
-		logError(err)
-		return nil, err
-	}
-	for _, file := range files {
-		if strings.Contains(file.Name(), ".jpg") || strings.Contains(file.Name(), ".JPG") ||
-			strings.Contains(file.Name(), ".jpeg") || strings.Contains(file.Name(), ".JPEG") ||
-			strings.Contains(file.Name(), ".png") || strings.Contains(file.Name(), ".PNG") {
-			fileNames = append(fileNames, file.Name())
-		}
-	}
-	return fileNames, nil
-
-}
-
-// sort the file names
-func sortImageFilenames(files []string) error {
-	if len(files) == 0 {
-		return errors.New("le tableau de fichiers est vide")
-	}
-	// On définit un regex pour extraire les numéros principaux et secondaires
-	re := regexp.MustCompile(`^(\d+)(?:-(\d+))?\.jpg$`)
-
-	sort.Slice(files, func(i, j int) bool {
-		matchI := re.FindStringSubmatch(files[i])
-		matchJ := re.FindStringSubmatch(files[j])
-
-		if matchI == nil || matchJ == nil {
-			// Si le nom ne matche pas le format attendu, on compare simplement par string
-			return files[i] < files[j]
-		}
-
-		// Conversion des numéros en entiers
-		mainI, _ := strconv.Atoi(matchI[1])
-		mainJ, _ := strconv.Atoi(matchJ[1])
-
-		if mainI != mainJ {
-			return mainI < mainJ
-		}
-
-		// Comparaison des sous-numéros (si présents)
-		var subI, subJ int
-		if matchI[2] != "" {
-			subI, _ = strconv.Atoi(matchI[2])
-		}
-		if matchJ[2] != "" {
-			subJ, _ = strconv.Atoi(matchJ[2])
-		}
-		return subI < subJ
+	label := widget.NewLabel("Aucun dossier sélectionné")
+	w := v.a.NewWindow("Sélection de dossier")
+	widget.NewButton("Choisir un dossier", func() {
+		dialog.ShowFolderOpen(func(uri fyne.ListableURI, err error) {
+			if err != nil {
+				label.SetText("Erreur : " + err.Error())
+				return
+			}
+			if uri != nil {
+				label.SetText("Dossier sélectionné :\n" + uri.Path())
+				// onFolderChosen(uri.Path()) // transition vers la page suivante
+			} else {
+				label.SetText("Sélection annulée")
+			}
+		}, w)
 	})
-	return nil
+
 }
 
-func extractLotNumber(url string) string {
+// Interface de départ
+func buildInitialInterface(w fyne.Window, onFolderChosen func(path string)) fyne.CanvasObject {
+	label := widget.NewLabel("Aucun dossier sélectionné")
 
-	// Le regex capture le nombre avant ".jpg" ou "-X.jpg"
-	re := regexp.MustCompile(`/(\d+)(?:-\d+)?\.(?:jpg|jpeg|png)$`)
-	match := re.FindStringSubmatch(url)
-	if match == nil {
-		logError(fmt.Errorf("Aucun numéro de lot trouvé dans l'URL : %s", url))
-		return ""
-	}
-	return match[1]
+	openBtn := widget.NewButton("Choisir un dossier", func() {
+		dialog.ShowFolderOpen(func(uri fyne.ListableURI, err error) {
+			if err != nil {
+				label.SetText("Erreur : " + err.Error())
+				return
+			}
+			if uri != nil {
+				label.SetText("Dossier sélectionné :\n" + uri.Path())
+				onFolderChosen(uri.Path()) // transition vers la page suivante
+			} else {
+				label.SetText("Sélection annulée")
+			}
+		}, w)
+	})
+
+	return container.NewVBox(
+		widget.NewLabelWithStyle("Bienvenue", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+		openBtn,
+		label,
+	)
 }
 
-var entetes = map[int]string{
-	0: "Numéro de lot",
-	1: "Images",
-	2: "NB d'images",
-}
-
-func setHeader(f *excelize.File, sheetName string) {
-	// Set header
-	for i, v := range entetes {
-		cell, err := excelize.CoordinatesToCellName(i+1, 1)
+// Trouve la première image dans le dossier (jpg, png)
+func findFirstImage(folder string) string {
+	var result string
+	filepath.WalkDir(folder, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			fmt.Println(err)
-			return
+			return nil
 		}
-		f.SetCellValue(sheetName, cell, v)
-	}
+		if !d.IsDir() && isImageFile(path) {
+			result = path
+			return fs.SkipDir // stop après la première
+		}
+		return nil
+	})
+	return result
 }
 
-func logError(err error) {
-	if err == nil {
-		return
-	}
-
-	f, fileErr := os.OpenFile("error.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if fileErr != nil {
-		log.Printf("Impossible d'ouvrir error.txt : %v", fileErr)
-		return
-	}
-	defer f.Close()
-
-	logger := log.New(f, "", log.LstdFlags)
-	logger.Printf("Erreur : %v\n", err)
-}
-
-func logAction(msg string) {
-	if msg == "" {
-		return
-	}
-
-	f, fileErr := os.OpenFile("actions.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if fileErr != nil {
-		log.Printf("Impossible d'ouvrir error.txt : %v", fileErr)
-		return
-	}
-	defer f.Close()
-
-	logger := log.New(f, "", log.LstdFlags)
-	logger.Printf("Erreur : %v\n", msg)
+// Vérifie l'extension
+func isImageFile(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	return ext == ".jpg" || ext == ".jpeg" || ext == ".png"
 }
