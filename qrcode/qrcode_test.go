@@ -20,6 +20,7 @@ func TestReadFileQrcode(t *testing.T) {
 		"qr-timbre.png":            "",
 		"test-special-qrcode.png":  "12",
 		"test-special-qrcode2.png": "12",
+		"test-special-qrcode3.png": "3",
 		"timbre-qrcode-2.jpg":      "",
 		"timbre-qrcode.jpg":        "",
 	}
